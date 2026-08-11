@@ -100,6 +100,41 @@ section[data-testid="stSidebar"] { display: none; }
     margin-top: 0.6rem;
 }
 
+/* Full/flat frame (toggle alt state) */
+.flat {
+    width: 100%;
+    aspect-ratio: 1 / 1;
+    border-radius: 10px;
+    overflow: hidden;
+    border: 1px solid #262A33;
+    background: #14101c;
+}
+.flat img { width: 100%; height: 100%; object-fit: contain; }
+
+/* View-mode toggle, styled like a lab switch */
+div[data-testid="stRadio"] > label { display: none; }
+div[data-testid="stRadio"] > div {
+    flex-direction: row;
+    gap: 0;
+    border: 1px solid #262A33;
+    border-radius: 6px;
+    width: fit-content;
+    overflow: hidden;
+}
+div[data-testid="stRadio"] label {
+    font-family: 'JetBrains Mono', monospace !important;
+    font-size: 0.72rem !important;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    padding: 0.4rem 0.9rem;
+    margin: 0 !important;
+    color: #8A8F98;
+}
+div[data-testid="stRadio"] label:has(input:checked) {
+    background: #1E212B;
+    color: #D6547A;
+}
+
 /* Readout panel */
 .readout {
     font-family: 'JetBrains Mono', monospace;
@@ -193,10 +228,11 @@ def to_b64(pil_img):
     pil_img.save(buf, format="PNG")
     return base64.b64encode(buf.getvalue()).decode()
 
-def scope_html(pil_img, caption):
+def scope_html(pil_img, caption, view_mode):
     b64 = to_b64(pil_img)
+    frame_class = "scope" if view_mode == "Eyepiece" else "flat"
     return f"""
-    <div class="scope"><img src="data:image/png;base64,{b64}" /></div>
+    <div class="{frame_class}"><img src="data:image/png;base64,{b64}" /></div>
     <div class="scope-caption">{caption}</div>
     """
 
@@ -251,11 +287,15 @@ if uploaded_file is not None:
     label = class_names[pred_idx]
     accent = "#3FB8AF" if label == "Normal" else "#E8543E"
 
+    view_mode = st.radio(
+        "View mode", ["Eyepiece", "Full"], horizontal=True, label_visibility="collapsed"
+    )
+
     col1, col2 = st.columns(2, gap="large")
     with col1:
-        st.markdown(scope_html(orig_pil, "Specimen · original"), unsafe_allow_html=True)
+        st.markdown(scope_html(orig_pil, "Specimen · original", view_mode), unsafe_allow_html=True)
     with col2:
-        st.markdown(scope_html(overlay_pil, "Grad-CAM · model focus"), unsafe_allow_html=True)
+        st.markdown(scope_html(overlay_pil, "Grad-CAM · model focus", view_mode), unsafe_allow_html=True)
 
     st.markdown(f"""
     <div class="readout" style="--accent: {accent};">
