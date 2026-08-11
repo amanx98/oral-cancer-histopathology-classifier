@@ -160,6 +160,25 @@ div[data-testid="stRadio"] label:has(input:checked) {
     padding-top: 1rem;
     margin-top: 2rem;
 }
+
+/* OOD warning panel */
+.ood-warning {
+    font-family: 'JetBrains Mono', monospace;
+    border: 1px solid #E8543E;
+    border-left: 4px solid #E8543E;
+    background: #1C1213;
+    border-radius: 6px;
+    padding: 1.2rem 1.6rem;
+    margin-top: 1rem;
+    color: #F4A79A;
+}
+.ood-warning b { color: #E8543E; }
+.ood-detail {
+    font-family: 'Inter', sans-serif;
+    font-size: 0.82rem;
+    color: #8A8F98;
+    margin-top: 0.5rem;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -189,6 +208,17 @@ def load_model():
     return m
 
 model = load_model()
+
+@st.cache_resource
+def load_ood_stats():
+    feature_mean = np.load("feature_mean.npy")
+    feature_cov_inv = np.load("feature_cov_inv.npy")
+    threshold = float(np.load("ood_threshold.npy")[0])
+    return feature_mean, feature_cov_inv, threshold
+
+feature_mean, feature_cov_inv, ood_threshold = load_ood_stats()
+feature_extractor = nn.Sequential(model.features, model.avgpool, nn.Flatten())
+feature_extractor.eval()
 
 gradients, activations = [], []
 def save_gradient(module, grad_input, grad_output): gradients.append(grad_output[0])
@@ -222,6 +252,26 @@ def generate_gradcam(image_tensor, class_idx):
     cam = (cam - cam.min()) / (cam.max() - cam.min() + 1e-8)
     torch.set_grad_enabled(False)
     return cam
+
+def color_check(pil_img):
+    """Cheap heuristic: does this image's color palette resemble H&E staining
+    (purple/violet hematoxylin + pink/magenta eosin)? Returns (passed, fraction)."""
+    img_np = np.array(pil_img.resize((128, 128)))
+    hsv = cv2.cvtColor(img_np, cv2.COLOR_RGB2HSV)
+    hue, sat = hsv[:, :, 0], hsv[:, :, 1]
+
+    # OpenCV hue range 0-179. H&E purples/pinks/magentas sit roughly 120-179 and wrap to 0-10.
+    in_he_range = ((hue >= 120) | (hue <= 10)) & (sat > 25)
+    fraction = in_he_range.mean()
+    return fraction > 0.15, fraction
+
+def mahalanobis_check(img_tensor):
+    """Feature-space distance from the training distribution. Returns (passed, distance)."""
+    with torch.no_grad():
+        feat = feature_extractor(img_tensor.unsqueeze(0).to(device)).cpu().numpy()[0]
+    diff = feat - feature_mean
+    distance = float(diff @ feature_cov_inv @ diff.T)
+    return distance <= ood_threshold, distance
 
 def to_b64(pil_img):
     buf = BytesIO()
@@ -265,10 +315,29 @@ uploaded_file = st.file_uploader(" ", type=["png", "jpg", "jpeg"], label_visibil
 
 if uploaded_file is not None:
     input_image = Image.open(uploaded_file).convert("RGB")
+    img_tensor = eval_transform(input_image).to(device)
+
+    # --- OOD gate: cheap color check first, then feature-space distance ---
+    color_ok, color_frac = color_check(input_image)
+    dist_ok, distance = mahalanobis_check(img_tensor)
+
+    if not color_ok or not dist_ok:
+        reason = []
+        if not color_ok:
+            reason.append("color palette doesn't resemble H&E staining")
+        if not dist_ok:
+            reason.append("feature pattern falls outside the training distribution")
+        st.markdown(f"""
+        <div class="ood-warning">
+            <b>⚠ Not recognized as an oral tissue histopathology slide</b>
+            <div class="ood-detail">Reason: {" and ".join(reason)}.<br>
+            Color match: {color_frac:.0%} · Feature distance: {distance:.0f} (threshold: {ood_threshold:.0f})<br>
+            Classification was skipped rather than forcing a Normal/OSCC label on an out-of-distribution image.</div>
+        </div>
+        """, unsafe_allow_html=True)
+        st.stop()
 
     with st.spinner("Analyzing tissue sample..."):
-        img_tensor = eval_transform(input_image).to(device)
-
         with torch.no_grad():
             output = model(img_tensor.unsqueeze(0))
             probs = torch.softmax(output, dim=1)[0]
