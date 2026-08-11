@@ -4,7 +4,7 @@ A CNN that classifies H&E-stained oral tissue biopsy images as **Normal** or **O
 
 **🔗 Live demo:** [oral-cancer-histopathology-classifier.streamlit.app](https://oral-cancer-histopathology-classifier-hng2phn3silmz4emxvhzwd.streamlit.app/)
 
-assets/Screenshot 2026-08-12 011310.png
+![App screenshot](assets/Screenshot 2026-08-12 011310.png)
 
 
 ---
