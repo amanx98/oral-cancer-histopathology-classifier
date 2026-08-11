@@ -260,10 +260,10 @@ def color_check(pil_img):
     hsv = cv2.cvtColor(img_np, cv2.COLOR_RGB2HSV)
     hue, sat = hsv[:, :, 0], hsv[:, :, 1]
 
-    # OpenCV hue range 0-179. H&E purples/pinks/magentas sit roughly 120-179 and wrap to 0-10.
-    in_he_range = ((hue >= 120) | (hue <= 10)) & (sat > 25)
+    # Widened range: purples/magentas/pinks (110-179, wrapping to 0-15), lower saturation bar
+    in_he_range = ((hue >= 110) | (hue <= 15)) & (sat > 12)
     fraction = in_he_range.mean()
-    return fraction > 0.15, fraction
+    return fraction > 0.06, fraction
 
 def mahalanobis_check(img_tensor):
     """Feature-space distance from the training distribution. Returns (passed, distance)."""
@@ -271,7 +271,10 @@ def mahalanobis_check(img_tensor):
         feat = feature_extractor(img_tensor.unsqueeze(0).to(device)).cpu().numpy()[0]
     diff = feat - feature_mean
     distance = float(diff @ feature_cov_inv @ diff.T)
-    return distance <= ood_threshold, distance
+    # Loosened margin: the raw 99.5th-percentile-of-train threshold was too tight for
+    # legitimate images that simply differ from the training set's own internal spread.
+    relaxed_threshold = ood_threshold * 1.6
+    return distance <= relaxed_threshold, distance, relaxed_threshold
 
 def to_b64(pil_img):
     buf = BytesIO()
@@ -319,9 +322,11 @@ if uploaded_file is not None:
 
     # --- OOD gate: cheap color check first, then feature-space distance ---
     color_ok, color_frac = color_check(input_image)
-    dist_ok, distance = mahalanobis_check(img_tensor)
+    dist_ok, distance, relaxed_threshold = mahalanobis_check(img_tensor)
+    is_ood = not color_ok or not dist_ok
 
-    if not color_ok or not dist_ok:
+    proceed_anyway = False
+    if is_ood:
         reason = []
         if not color_ok:
             reason.append("color palette doesn't resemble H&E staining")
@@ -331,11 +336,12 @@ if uploaded_file is not None:
         <div class="ood-warning">
             <b>⚠ Not recognized as an oral tissue histopathology slide</b>
             <div class="ood-detail">Reason: {" and ".join(reason)}.<br>
-            Color match: {color_frac:.0%} · Feature distance: {distance:.0f} (threshold: {ood_threshold:.0f})<br>
-            Classification was skipped rather than forcing a Normal/OSCC label on an out-of-distribution image.</div>
+            Color match: {color_frac:.0%} · Feature distance: {distance:.0f} (threshold: {relaxed_threshold:.0f})</div>
         </div>
         """, unsafe_allow_html=True)
-        st.stop()
+        proceed_anyway = st.toggle("Show prediction anyway", value=False)
+        if not proceed_anyway:
+            st.stop()
 
     with st.spinner("Analyzing tissue sample..."):
         with torch.no_grad():
@@ -355,6 +361,13 @@ if uploaded_file is not None:
 
     label = class_names[pred_idx]
     accent = "#3FB8AF" if label == "Normal" else "#E8543E"
+
+    if proceed_anyway:
+        st.markdown(
+            '<div class="ood-detail" style="margin-bottom:0.8rem;">'
+            '⚠ Showing prediction despite failed out-of-distribution check — treat with caution.</div>',
+            unsafe_allow_html=True
+        )
 
     view_mode = st.radio(
         "View mode", ["Eyepiece", "Full"], horizontal=True, label_visibility="collapsed"
